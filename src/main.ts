@@ -23,6 +23,6 @@ async function bootstrap() {
   await app.startAllMicroservices();
   await app.listen(process.env.PORT ?? 3001);
 
-  console.log(`Analytics HTTP on :${process.env.PORT ?? 3001}`);
+  console.log(`Auth HTTP on :${process.env.PORT ?? 3001}`);
 }
 void bootstrap();
