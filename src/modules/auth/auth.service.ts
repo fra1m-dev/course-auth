@@ -19,7 +19,7 @@ export class AuthService {
 
   // ---------- JWT (RS256) ----------
   async generateTokens(
-    user: JwtPayload, //FIXME: изменить в монолите используется обычно сузность UserEntity - тут надо подумать
+    user: JwtPayload,
   ): Promise<{ accessToken: string; refreshToken: string }> {
     const accessPrivate = this.cfg.getOrThrow<string>('JWT_PRIVATE_KEY');
     const refreshPrivate = this.cfg.getOrThrow<string>(
