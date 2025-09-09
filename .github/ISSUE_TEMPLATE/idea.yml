@@ -1,0 +1,62 @@
+name: "Идея / RFC"
+description: "Предложение изменения архитектуры или фичи"
+title: "[IDEA] <краткое название>"
+labels: ["idea"]
+assignees: []   # можно указать логины, напр. ["fra1m"]
+
+body:
+  - type: input
+    id: summary
+    attributes:
+      label: Кратко
+      description: О чём идея в одном абзаце
+      placeholder: Короткое описание
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Мотивация
+      description: Почему это нужно, боль/выгоды
+      placeholder: Опишите бизнес-/техпричины
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Объём изменений
+      description: Какие сервисы/компоненты/инфра меняются
+      placeholder: "- Сервис A…\n- Сервис B…\n- Инфра…"
+    validations:
+      required: true
+
+  - type: textarea
+    id: compat
+    attributes:
+      label: Безопасность / Совместимость
+      description: Что ломаем/не ломаем, риски, миграции данных
+    validations:
+      required: true
+
+  - type: textarea
+    id: rollout
+    attributes:
+      label: План развёртывания
+      description: Как выкатываем (dev → stage → prod), фичефлаг/откат
+      placeholder: "dev: …\nstage: …\nprod: …"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      options:
+        - label: Определены критерии приёмки
+          required: true
+        - label: Оценены риски/совместимость
+          required: true
+        - label: Есть план отката
+          required: true
