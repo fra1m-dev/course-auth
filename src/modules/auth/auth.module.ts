@@ -7,10 +7,10 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { TokenEntity } from './entities/auth.entity';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
+// import { AuthLibModule } from '@fra1m-dev/contracts-auth';
 
 @Module({
   imports: [
-    ConfigModule,
     TypeOrmModule.forFeature([TokenEntity]),
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -28,3 +28,7 @@ import { AuthController } from './auth.controller';
   providers: [AuthService],
 })
 export class AuthModule {}
+
+// AuthLibModule.forRoot({
+//   secret: process.env.JWT_ACCESS_SECRET || 'secret',
+// }), //TODO надо раскомитить и проверить как оно будет работать

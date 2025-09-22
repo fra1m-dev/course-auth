@@ -22,14 +22,157 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@fra1m-dev'
           cache: npm
+
       - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.PACKAGE_SECRET }}
+
       - run: npm run lint --if-present
       - run: npm run build
       - run: npm test --if-present
+
+  sync_todos:
+    name: Create issues from todos.md
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    needs: ci
+    if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # - name: Skip if todos.md not changed
+      #   id: diff
+      #   run: |
+      #     if git diff --name-only HEAD^ HEAD | grep -q "^todos.md$"; then
+      #       echo "changed=true" >> $GITHUB_OUTPUT
+      #     else
+      #       echo "changed=false" >> $GITHUB_OUTPUT
+      #     fi
+
+      - name: Create/Update issues from todos.md
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const crypto = require('crypto');
+      
+            const owner = context.repo.owner;
+            const repo  = context.repo.repo;
+      
+            // --- входной файл
+            if (!fs.existsSync('todos.md')) { core.info('todos.md not found. Skip'); return; }
+            const md = fs.readFileSync('todos.md','utf8').trim();
+            if (!md) { core.info('todos.md is empty. Skip'); return; }
+      
+            // --- секции
+            const idx = md.indexOf('### FIXMEs');
+            const todosBlock = idx === -1 ? md : md.slice(0, idx);
+            const fixmesBlock = idx === -1 ? '' : md.slice(idx);
+      
+            // --- парсер таблиц
+            function parse(block){
+              const rows=[];
+              for (const line of block.split('\n')) {
+                const m = line.match(/^\|\s*\[([^\]]+)\]\(([^)]+)\)\s*\|\s*(\d+)\s*\|\s*(.+?)\s*\|$/);
+                if (m) rows.push({ file:m[1], link:m[2], line:m[3], text:m[4].trim().replace(/\s+/g,' ') });
+              }
+              return rows;
+            }
+            const todos = parse(todosBlock);
+            const fixmes = parse(fixmesBlock);
+      
+            // --- лейблы (мягко)
+            async function ensureLabel(name,color,desc){
+              try { await github.rest.issues.getLabel({ owner, repo, name }); }
+              catch {
+                try { await github.rest.issues.createLabel({ owner, repo, name, color, description: desc }); }
+                catch (err) { core.warning(`Label "${name}" not created: ${err.status} ${err.message}`); }
+              }
+            }
+            await ensureLabel('todo', '0E8A16', 'Auto-created from TODOs');
+            await ensureLabel('fix',  'D73A4A', 'Auto-created from FIXMEs');
+            await ensureLabel('bug',  'B60205', 'Bug');
+            await ensureLabel('type: task', '0366D6', 'Task type');
+            await ensureLabel('type: bug',  'D93F0B', 'Bug type');
+      
+            // --- открытый milestone (первый)
+            let milestoneNumber = undefined;
+            try {
+              const { data: mls } = await github.rest.issues.listMilestones({ owner, repo, state: 'open', per_page: 1 });
+              milestoneNumber = mls[0]?.number;
+            } catch (e) { core.warning(`Milestone lookup failed: ${e.message}`); }
+      
+            // --- assignee = автор пуша, если коллаборатор
+            const assignee = context.actor;
+            let canAssign = true;
+            try {
+              await github.rest.repos.checkCollaborator({ owner, repo, username: assignee });
+            } catch {
+              canAssign = false;
+            }
+      
+            // --- стабильный ключ по записи
+            const makeKey = (kind, it) =>
+              crypto.createHash('sha1').update(`${kind}|${it.file}|${it.line}`).digest('hex');
+      
+            // --- поиск issue по ключу в body
+            async function findByKey(key) {
+              const q = `repo:${owner}/${repo} is:issue in:body "${key}"`;
+              const res = await github.rest.search.issuesAndPullRequests({ q, per_page: 10 });
+              return res.data.items.find(i => i.state === 'open');
+            }
+      
+            // --- ссылки на конкретный коммит
+            const repoBase = `https://github.com/${owner}/${repo}/blob/${context.sha}/`;
+            const abs = (link)=> link.startsWith('http') ? link : `${repoBase}${link}`;
+      
+            // --- создать/обновить по ключу
+            async function upsert(items, coreLabels, kind, typeLabel){
+              for (const it of items) {
+                const key = makeKey(kind, it);
+                const title = `[${kind}] ${it.file}:${it.line} — ${it.text}`.slice(0,250);
+                const body = [
+                  `**Type:** ${kind}`,
+                  ``,
+                  `- File: \`${it.file}\` (line ${it.line})`,
+                  `- Link: ${abs(it.link)}`,
+                  ``,
+                  `> Extracted automatically from \`todos.md\`.`,
+                  ``,
+                  `<!-- todo-key:${key} -->` // 👈 невидимый якорь для идемпотентности
+                ].join('\n');
+      
+                const existing = await findByKey(key);
+                const labels = [...new Set([...coreLabels, typeLabel])];
+      
+                if (existing) {
+                  await github.rest.issues.update({
+                    owner, repo, issue_number: existing.number,
+                    title, body, labels, milestone: milestoneNumber
+                  });
+                } else {
+                  await github.rest.issues.create({
+                    owner, repo, title, body,
+                    labels, milestone: milestoneNumber,
+                    assignees: canAssign ? [assignee] : undefined
+                  });
+                }
+              }
+            }
+      
+            await upsert(todos, ['todo'], 'todo', 'type: task');
+            await upsert(fixmes, ['fix','bug'], 'fixme', 'type: bug');
 
   docker:
     name: Build & Push Docker (only on tag)

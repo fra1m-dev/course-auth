@@ -8,8 +8,10 @@
 *.tsbuildinfo
 /uploads
 /Makefile
-# /test
 docker-*
+
+# private packages
+.npmrc
 
 # Logs
 logs

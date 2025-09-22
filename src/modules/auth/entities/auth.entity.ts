@@ -12,12 +12,15 @@ export class TokenEntity extends BaseEntity {
   @PrimaryGeneratedColumn()
   id!: number;
 
-  @Column({ type: 'varchar', length: 512, unique: true })
-  token!: string;
+  @Column({ type: 'varchar', length: 512, unique: true, nullable: true })
+  token!: string | null;
 
-  @Index()
-  @Column({ type: 'varchar', length: 64 })
-  userId!: string;
+  @Index({ unique: true })
+  @Column({ type: 'int' })
+  userId!: number;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  passwordHash!: string | null;
 
   @CreateDateColumn({ type: 'timestamptz', name: 'created_at' })
   createdAt!: Date;

@@ -1,0 +1,116 @@
+name: Status=Expired on close with label
+
+on:
+  issues:
+    types: [closed, labeled]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  # права на Projects приходят из PAT (ORG_PAT)
+
+jobs:
+  set-expired:
+    # запускаем только если issue закрыт И в нём есть label expired
+    if: >
+      (github.event.action == 'closed' && contains(join(github.event.issue.labels.*.name), 'expired')) ||
+      (github.event.action == 'labeled' && github.event.label.name == 'expired' && github.event.issue.state == 'closed')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Guard (closed + has expired)
+        id: guard
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const issue = context.payload.issue;
+            const labels = (issue.labels || []).map(l => (l.name || l).toLowerCase());
+            const hasExpired = labels.includes('expired') || labels.includes('exparied'); // ловим возможную опечатку
+            const isClosed = issue.state === 'closed';
+            core.setOutput('ok', (hasExpired && isClosed) ? 'true' : 'false');
+
+      - name: Exit if not closed+expired
+        if: steps.guard.outputs.ok != 'true'
+        run: echo "Skip - not closed+expired"
+
+      - name: Set Status=Expired in org Project #1
+        if: steps.guard.outputs.ok == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.ORG_PAT }}  # <-- правильно: github-token
+          script: |
+            const org = 'fra1m-dev';   // организация
+            const projectNumber = 1;   // https://github.com/orgs/fra1m-dev/projects/1
+            const issueNodeId = context.payload.issue.node_id;
+
+            // 1) Берём проект и поле Status (ищем опцию Expired)
+            const projQ = `
+              query($org:String!, $num:Int!) {
+                organization(login:$org){
+                  projectV2(number:$num){
+                    id
+                    title
+                    fields(first:50){
+                      nodes{
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          options { id name }
+                        }
+                      }
+                    }
+                  }
+                }
+              }`;
+            const resp = await github.graphql(projQ, { org, num: projectNumber });
+            const project = resp.organization && resp.organization.projectV2;
+            if (!project) { core.setFailed('Project #'+projectNumber+' not found in '+org); return; }
+
+            const statusField = (project.fields.nodes || []).find(f => f && f.name === 'Status');
+            if (!statusField) { core.setFailed('Status field not found'); return; }
+
+            const expiredOpt = (statusField.options || []).find(o => o.name.toLowerCase() === 'expired');
+            if (!expiredOpt) { core.setFailed('Status option "Expired" not found'); return; }
+
+            // 2) Ищем item этого issue в проекте
+            const findItemQ = `
+              query($issue:ID!){
+                node(id:$issue){
+                  ... on Issue {
+                    projectItems(first:50){
+                      nodes{ id project{... on ProjectV2 { id }} }
+                    }
+                  }
+                }
+              }`;
+            const found = await github.graphql(findItemQ, { issue: issueNodeId });
+            let itemId = (found.node.projectItems.nodes || []).find(n => n.project && n.project.id === project.id)?.id;
+
+            // 3) Если нет — добавляем в проект
+            if (!itemId) {
+              const addM = `
+                mutation($proj:ID!, $issue:ID!){
+                  addProjectV2ItemById(input:{ projectId:$proj, contentId:$issue }){ item { id } }
+                }`;
+              const added = await github.graphql(addM, { proj: project.id, issue: issueNodeId });
+              itemId = added.addProjectV2ItemById.item.id;
+            }
+
+            // 4) Обновляем поле Status → Expired
+            const updM = `
+              mutation($proj:ID!, $item:ID!, $field:ID!, $opt:String!){
+                updateProjectV2ItemFieldValue(input:{
+                  projectId:$proj,
+                  itemId:$item,
+                  fieldId:$field,
+                  value:{ singleSelectOptionId:$opt }
+                }){ projectV2Item { id } }
+              }`;
+            await github.graphql(updM, {
+              proj: project.id,
+              item: itemId,
+              field: statusField.id,
+              opt: expiredOpt.id
+            });
+            core.info('Status set to "Expired"');

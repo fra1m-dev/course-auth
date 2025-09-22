@@ -3,6 +3,8 @@ export const AUTH_PATTERNS = {
   VALIDATE_ACCESS: 'auth.validateAccess',
   VALIDATE_REFRESH: 'auth.validateRefresh',
 
+  CREATE_CREDENTIALS: 'auth.createCredentials',
+
   SAVE_TOKEN: 'auth.saveToken',
   REMOVE_TOKEN: 'auth.removeToken',
   FIND_TOKEN: 'auth.findToken',
