@@ -15,7 +15,7 @@ export const envSchema = Joi.object({
 
   // Postgres (если используешь поля отдельно)
   POSTGRES_HOST: Joi.string().required(),
-  POSTGRES_PORT: Joi.number().integer().default(5433),
+  POSTGRES_PORT: Joi.number().integer().default(5432),
   POSTGRES_DB: Joi.string().required(),
   POSTGRES_USER: Joi.string().required(),
   POSTGRES_PASSWORD: Joi.string().allow('').required(),

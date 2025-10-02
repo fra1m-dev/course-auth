@@ -14,4 +14,14 @@ export const AUTH_PATTERNS = {
   NEW_HASH_PASSWORD: 'auth.newHashPassword',
 } as const;
 
+export type IssuedTokens = {
+  accessToken: string;
+  refreshToken: string;
+  accessJti: string;
+  refreshJti: string;
+  accessTtlSec: number;
+  refreshTtlSec: number;
+};
+
 export type AuthPattern = (typeof AUTH_PATTERNS)[keyof typeof AUTH_PATTERNS];
+

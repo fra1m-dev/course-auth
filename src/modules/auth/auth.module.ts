@@ -1,13 +1,29 @@
+import * as fs from 'fs';
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
-// import { JwtAuthGuard } from 'src/guards/jwt-auth.guard';
-// import { RolesGuard } from 'src/guards/role.guard';
 import { TokenEntity } from './entities/auth.entity';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
-// import { AuthLibModule } from '@fra1m-dev/contracts-auth';
+
+function readKey(
+  cfg: ConfigService,
+  envPath: string,
+  envInline: string,
+  envBase64: string,
+) {
+  const p = cfg.get<string>(envPath);
+  if (p && fs.existsSync(p)) return fs.readFileSync(p, 'utf8');
+
+  const b64 = cfg.get<string>(envBase64);
+  if (b64) return Buffer.from(b64, 'base64').toString('utf8');
+
+  const inline = cfg.get<string>(envInline);
+  if (inline) return inline.replace(/\\n/g, '\n'); // на случай \n в .env
+
+  throw new Error(`Missing key: ${envPath} | ${envInline} | ${envBase64}`);
+}
 
 @Module({
   imports: [
@@ -15,13 +31,39 @@ import { AuthController } from './auth.controller';
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (cfg: ConfigService) => ({
-        // по умолчанию JwtService будет знать ключи и алгоритм,
-        // но в сервисе мы всё равно явно передаём при sign/verify
-        publicKey: cfg.get<string>('JWT_PUBLIC_KEY'),
-        privateKey: cfg.get<string>('JWT_PRIVATE_KEY'),
-        signOptions: { algorithm: 'RS256' },
-      }),
+      useFactory: (cfg: ConfigService) => {
+        const privateKey = readKey(
+          cfg,
+          'JWT_PRIVATE_KEY_PATH',
+          'JWT_PRIVATE_KEY',
+          'JWT_PRIVATE_KEY_B64',
+        );
+        const publicKey = readKey(
+          cfg,
+          'JWT_PUBLIC_KEY_PATH',
+          'JWT_PUBLIC_KEY',
+          'JWT_PUBLIC_KEY_B64',
+        );
+
+        const refreshPrivateKey = readKey(
+          cfg,
+          'JWT_REFRESH_PRIVATE_KEY_PATH',
+          'JWT_REFRESH_PRIVATE_KEY',
+          'JWT_REFRESH_PRIVATE_KEY_B64',
+        );
+        const refreshPublicKey = readKey(
+          cfg,
+          'JWT_REFRESH_PUBLIC_KEY_PATH',
+          'JWT_REFRESH_PUBLIC_KEY',
+          'JWT_REFRESH_PUBLIC_KEY_B64',
+        );
+
+        return {
+          privateKey, // используется JwtService по умолчанию
+          publicKey,
+          signOptions: { algorithm: 'RS256' },
+        };
+      },
     }),
   ],
   controllers: [AuthController],

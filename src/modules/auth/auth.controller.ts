@@ -6,13 +6,17 @@ import { MessagePattern, Payload, RpcException } from '@nestjs/microservices';
 import { AuthService } from './auth.service';
 import { AUTH_PATTERNS } from 'src/contracts/auth.patterns';
 import { Role } from '@fra1m-dev/contracts-auth';
+import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 // import { JwtPayload } from '@fra1m-dev/contracts-auth';
 
 @Controller()
 export class AuthController {
-  constructor(private readonly svc: AuthService) {}
+  constructor(
+    @InjectPinoLogger(AuthController.name) private readonly logger: PinoLogger,
+    private readonly svc: AuthService,
+  ) {}
 
-  @MessagePattern(AUTH_PATTERNS.CREATE_CREDENTIALS) // 'auth.createCredentials'
+  @MessagePattern(AUTH_PATTERNS.CREATE_CREDENTIALS)
   async createCredentials(
     @Payload()
     data: {
@@ -21,12 +25,25 @@ export class AuthController {
       password: string;
     },
   ) {
+    this.logger.info(
+      {
+        rid: data.meta?.requestId,
+        userId: data.userId,
+        password: '[REDACTED]',
+      },
+      AUTH_PATTERNS.CREATE_CREDENTIALS,
+    );
+
     try {
       await this.svc.createCredentials(data.userId, data.password);
       return { ok: true };
     } catch (e: any) {
+      this.logger.error(
+        { rid: data.meta?.requestId, err: e },
+        AUTH_PATTERNS.CREATE_CREDENTIALS,
+      );
       throw new RpcException({
-        message: e?.message ?? 'createCredentials failed',
+        message: e?.message ?? 'Create credentials failed',
       });
     }
   }
@@ -44,9 +61,27 @@ export class AuthController {
       };
     },
   ) {
-    const tokens = await this.svc.generateTokens(data.user);
-    // внутри generateTokens — сохранить refresh
-    return tokens;
+    this.logger.info(
+      {
+        rid: data.meta?.requestId,
+        user: data.user,
+      },
+      AUTH_PATTERNS.GENERATE_TOKENS,
+    );
+
+    try {
+      const tokens = await this.svc.generateTokens(data.user);
+      // внутри generateTokens — сохранить refresh
+      return tokens;
+    } catch (e: any) {
+      this.logger.error(
+        { rid: data.meta?.requestId, err: e },
+        AUTH_PATTERNS.GENERATE_TOKENS,
+      );
+      throw new RpcException({
+        message: e?.message ?? 'Generate tokens failed',
+      });
+    }
   }
 
   // @MessagePattern(AUTH_PATTERNS.SAVE_TOKEN)
