@@ -70,7 +70,3 @@ function readKey(
   providers: [AuthService],
 })
 export class AuthModule {}
-
-// AuthLibModule.forRoot({
-//   secret: process.env.JWT_ACCESS_SECRET || 'secret',
-// }), //TODO надо раскомитить и проверить как оно будет работать

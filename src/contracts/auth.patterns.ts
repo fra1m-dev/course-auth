@@ -4,6 +4,7 @@ export const AUTH_PATTERNS = {
   VALIDATE_REFRESH: 'auth.validateRefresh',
 
   CREATE_CREDENTIALS: 'auth.createCredentials',
+  AUTH_BY_PASSWORD: 'auth.authByPassword',
 
   SAVE_TOKEN: 'auth.saveToken',
   REMOVE_TOKEN: 'auth.removeToken',
@@ -24,4 +25,3 @@ export type IssuedTokens = {
 };
 
 export type AuthPattern = (typeof AUTH_PATTERNS)[keyof typeof AUTH_PATTERNS];
-

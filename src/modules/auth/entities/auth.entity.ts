@@ -20,7 +20,7 @@ export class TokenEntity extends BaseEntity {
   userId!: number;
 
   @Column({ type: 'varchar', length: 255, nullable: true })
-  passwordHash!: string | null;
+  passwordHash!: string;
 
   @CreateDateColumn({ type: 'timestamptz', name: 'created_at' })
   createdAt!: Date;

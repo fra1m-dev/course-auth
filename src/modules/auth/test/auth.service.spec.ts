@@ -1,7 +1,7 @@
 //FIXME: Раскомить и перепиши тесты
-import { Role } from '@fra1m-dev/contracts-auth';
 // import * as bcrypt from 'bcryptjs';
 
+import { Role } from 'src/common/models/user-model';
 import { AuthService } from 'src/modules/auth/auth.service';
 import { TokenEntity } from 'src/modules/auth/entities/auth.entity';
 
