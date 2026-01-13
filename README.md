@@ -1,388 +1,322 @@
-# course-auth
+# Auth Service
 
-NestJS-микросервис аутентификации/авторизации. Выдаёт пары токенов (**access RS256** + **refresh RS256**), валидирует их, хранит refresh-токены в БД, предоставляет RPC-методы через RabbitMQ и простые HTTP-эндпойнты здоровья.
-
----
+NestJS микросервис аутентификации/авторизации. Работает как RMQ RPC + небольшой
+HTTP сервер для health-check. Выдает пары JWT (access/refresh), хранит хеш
+refresh-токена и умеет логин по паролю.
 
 ## Содержание
 
-- [Функционал](#функционал)
-- [Технологии](#технологии)
+- [О сервисе](#о-сервисе)
+- [Архитектура](#архитектура)
+- [Токены и безопасность](#токены-и-безопасность)
+- [RPC контракты (RabbitMQ)](#rpc-контракты-rabbitmq)
+- [HTTP endpoints](#http-endpoints)
 - [Переменные окружения](#переменные-окружения)
-- [Быстрый старт](#быстрый-старт)
-  - [Локально (Node)](#локально-node)
-  - [Docker Compose (dev)](#docker-compose-dev)
-- [RPC (RabbitMQ) контракты](#rpc-rabbitmq-контракты)
-  - [GenerateTokens](#authgeneratetokens)
-  - [ValidateAccess](#authvalidateaccess)
-  - [ValidateRefresh](#authvalidaterefresh)
-  - [HashPassword](#authhashpassword)
-  - [ComparePassword](#authcomparepassword)
-- [HTTP API](#http-api)
 - [Структура БД](#структура-бд)
+- [Структура проекта](#структура-проекта)
+- [Быстрый старт](#быстрый-старт)
+- [Docker](#docker)
 - [Тесты и линт](#тесты-и-линт)
-- [CI/CD и релизы](#cicd-и-релизы)
-- [Kubernetes (примеры)](#kubernetes-примеры)
-- [Troubleshooting](#troubleshooting)
+- [CI/CD](#cicd)
 - [Лицензия](#лицензия)
 
----
+## О сервисе
 
-## Функционал
+- RMQ контракты для выдачи/валидации токенов и логина по паролю.
+- Access/Refresh JWT RS256, `jti` в обоих токенах.
+- Refresh токен хранится только в виде хеша (bcrypt от HMAC значения).
+- Пароли хешируются через bcrypt.
+- HTTP эндпойнты только для health-probe.
+- Логи через Pino, чувствительные поля редактируются.
 
-- Генерация пары токенов:
-  - **Access** — JWT RS256, подписывается приватным ключом `JWT_PRIVATE_KEY`; проверяется публичным `JWT_PUBLIC_KEY`.
-  - **Refresh** — JWT RS256 (секрет `JWT_REFRESH_SECRET`), хранится в БД (таблица `token`).
-- Валидация access/refresh токенов.
-- Хэширование/проверка пароля (`bcrypt`).
-- RPC-контракты через RabbitMQ (очередь `auth` по умолчанию).
-- HTTP-эндпойнты здоровья `/health/live`, `/health/ready`.
+## Архитектура
 
-> Переход на **opaque refresh tokens** запланирован (см. ADR `docs/adr/0001-opaque-refresh-tokens.md`).
+- NestJS приложение: HTTP + RMQ microservice в одном процессе.
+- Transport: RabbitMQ, очередь `RMQ_AUTH_QUEUE` (по умолчанию `auth`).
+- База: Postgres, TypeORM, `autoLoadEntities`, `synchronize` включен вне
+  production.
+- Логирование:
+  - HTTP: `nestjs-pino`
+  - RMQ: `RmqLoggingInterceptor` логирует начало/конец/ошибки.
 
----
+## Токены и безопасность
 
-## Технологии
+- **Access**: RS256, TTL `JWT_ACCESS_TTL` (по умолчанию `30m`).
+- **Refresh**: RS256, TTL `JWT_REFRESH_TTL` (по умолчанию `30d`).
+- **Хранение refresh**: в БД хранится `bcrypt(HMAC(refresh, TOKEN_PEPPER))`,
+  сам токен не сохраняется.
+- **Пароли**: `bcrypt` с `SALT_ROUNDS` (по умолчанию 12).
 
-- **NestJS** (RMQ microservice + HTTP health)
-- **RabbitMQ** (transport)
-- **PostgreSQL 17** + **TypeORM**
-- **JWT** (RS256/HS256)
-- **bcrypt**
-- **Jest** (юнит-тесты)
-- **GitHub Actions** (CI)
+Ключи можно передавать тремя способами (любой один):
 
----
+- `*_PATH` - путь до PEM файла.
+- `*_B64` - содержимое PEM в base64.
+- `*` - inline PEM, допускаются `\n` в .env.
+
+Если хотите использовать одну пару ключей для access и refresh - просто
+продублируйте значения.
+
+## RPC контракты (RabbitMQ)
+
+Формат сообщения Nest RMQ:
+
+```json
+{ "pattern": "auth.generateTokens", "data": { ... } }
+```
+
+Все запросы принимают `meta.requestId` (опционально, используется для логов).
+
+### auth.generateTokens
+
+Выдает пару токенов и сохраняет refresh-хеш.
+
+Request:
+
+```json
+{
+  "meta": { "requestId": "req-1" },
+  "user": {
+    "id": 1,
+    "email": "user@example.com",
+    "name": "Alice",
+    "role": "STUDENT",
+    "specializationId": 10
+  },
+  "password": "optional"
+}
+```
+
+Response:
+
+```json
+{
+  "accessToken": "...",
+  "refreshToken": "...",
+  "accessJti": "...",
+  "refreshJti": "...",
+  "accessTtlSec": 1800,
+  "refreshTtlSec": 2592000
+}
+```
+
+### auth.validateAccess
+
+Request:
+
+```json
+{ "meta": { "requestId": "req-2" }, "token": "..." }
+```
+
+Response:
+
+```json
+{ "userId": 1 }
+```
+
+### auth.validateRefresh
+
+Request:
+
+```json
+{ "meta": { "requestId": "req-3" }, "token": "..." }
+```
+
+Response:
+
+```json
+{ "userId": 1 }
+```
+
+### auth.authByPassword
+
+Проверяет пароль пользователя и выдает токены.
+
+Request:
+
+```json
+{ "meta": { "requestId": "req-4" }, "user": { ... }, "password": "pass123" }
+```
+
+Response: как в `auth.generateTokens`.
+
+### auth.createCredentials
+
+Создает/обновляет пароль пользователя.
+
+Request:
+
+```json
+{ "meta": { "requestId": "req-5" }, "userId": 1, "password": "pass123" }
+```
+
+Response:
+
+```json
+{ "ok": true }
+```
+
+### auth.removeToken
+
+Отзывает refresh токен.
+
+Request:
+
+```json
+{ "meta": { "requestId": "req-6" }, "refreshToken": "..." }
+```
+
+Response:
+
+```json
+true
+```
+
+В `src/contracts/auth.patterns.ts` есть дополнительные паттерны, но в
+контроллере сейчас реализованы только перечисленные выше.
+
+## HTTP endpoints
+
+- `GET /health/live`
+- `GET /health/ready`
 
 ## Переменные окружения
 
-Пример: `.env.example`
+### Базовые
+
+- `NODE_ENV` - `development|test|production`, по умолчанию `development`.
+- `PORT` - HTTP порт, по умолчанию `3003`.
+- `SERVICE_NAME`, `SERVICE_VERSION` - подпись в логах.
+- `LOG_LEVEL` - уровень логов, по умолчанию `info`.
+- `LOG_PRETTY` - `true` для pretty логов в dev.
+
+### RabbitMQ
+
+- `RABBITMQ_URL` - URL брокера (обязательно).
+- `RMQ_AUTH_QUEUE` - имя очереди, по умолчанию `auth`.
+- `RMQ_PREFETCH` - prefetch, по умолчанию `16`.
+- `RMQ_DLX` - dead-letter exchange, по умолчанию `dlx`.
+- `RMQ_MESSAGE_TTL_MS` - TTL сообщений (мс), опционально.
+- `RMQ_MAX_LENGTH` - максимальная длина очереди, опционально.
+
+Важно: сервис читает `RABBITMQ_URL` и `RMQ_AUTH_QUEUE` (не `RMQ_URL`/`AUTH_QUEUE`).
+
+### Postgres
+
+- `POSTGRES_HOST`
+- `POSTGRES_PORT` (по умолчанию `5432`)
+- `POSTGRES_DB`
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
+- `DATABASE_URL` - если задан, используется вместо отдельных полей.
+
+### JWT
+
+Access:
+
+- `JWT_PRIVATE_KEY_PATH` / `JWT_PRIVATE_KEY` / `JWT_PRIVATE_KEY_B64`
+- `JWT_PUBLIC_KEY_PATH` / `JWT_PUBLIC_KEY` / `JWT_PUBLIC_KEY_B64`
+
+Refresh:
+
+- `JWT_REFRESH_PRIVATE_KEY_PATH` / `JWT_REFRESH_PRIVATE_KEY` / `JWT_REFRESH_PRIVATE_KEY_B64`
+- `JWT_REFRESH_PUBLIC_KEY_PATH` / `JWT_REFRESH_PUBLIC_KEY` / `JWT_REFRESH_PUBLIC_KEY_B64`
+
+TTL и безопасность:
+
+- `JWT_ACCESS_TTL` - например `30m`, `900`, `1h`.
+- `JWT_REFRESH_TTL` - например `30d`.
+- `TOKEN_PEPPER` - секрет для HMAC refresh токена (рекомендуется).
+- `SALT_ROUNDS` - раунды bcrypt, по умолчанию `12`.
+
+Примечание: `JWT_REFRESH_SECRET` не используется - refresh подписывается RS256
+ключом.
+
+## Структура БД
+
+Таблица `token`:
+
+| колонка | тип | примечание |
+| --- | --- | --- |
+| id | serial PK | |
+| token | varchar(512) | bcrypt(HMAC(refresh)) |
+| userId | int, unique | id пользователя |
+| passwordHash | varchar(255) | bcrypt |
+| created_at | timestamptz | now() |
+
+## Структура проекта
+
+```
+src/
+  app.module.ts
+  main.ts
+  config/validation.ts
+  contracts/auth.patterns.ts
+  common/logger/
+  modules/
+    auth/
+      auth.controller.ts
+      auth.service.ts
+      entities/auth.entity.ts
+    health/
+```
+
+## Быстрый старт
+
+### Локально
+
+```bash
+npm ci
+# Создай .env и положи ключи (см. раздел "Переменные окружения")
+npm run start:dev
+curl http://localhost:3003/health/live
+```
+
+### Пример .env (минимум)
 
 ```env
 NODE_ENV=development
-PORT=3001
+PORT=3003
 
-# RabbitMQ
-RMQ_URL=amqp://dev:dev@localhost:5672
-AUTH_QUEUE=auth
+RABBITMQ_URL=amqp://dev:dev@localhost:5672
+RMQ_AUTH_QUEUE=auth
 
-# Postgres
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
 POSTGRES_DB=auth_db
 POSTGRES_USER=auth
 POSTGRES_PASSWORD=auth
 
-# JWT (access RS256 / refresh HS256)
-JWT_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----
-JWT_PUBLIC_KEY=-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----
-JWT_REFRESH_SECRET=dev-refresh-secret
+JWT_PRIVATE_KEY_PATH=./keys/access-private.pem
+JWT_PUBLIC_KEY_PATH=./keys/access-public.pem
+JWT_REFRESH_PRIVATE_KEY_PATH=./keys/refresh-private.pem
+JWT_REFRESH_PUBLIC_KEY_PATH=./keys/refresh-public.pem
 
-# TTL (опционально, по умолчанию: 30m/30d)
-ACCESS_TTL=30m
-REFRESH_TTL=30d
-
-# Пароли
-SALT_ROUNDS=10
+TOKEN_PEPPER=change-me
+SALT_ROUNDS=12
 ```
 
----
-
-## Быстрый старт
-
-### Локально (Node)
+## Docker
 
 ```bash
-# 1) Установка зависимостей
-npm ci
-
-# 2) Заполни .env (см. .env.example) и подними Postgres + RabbitMQ
-
-# 3) Запуск сервиса в dev‑режиме (hot‑reload)
-npm run dev
-
-# Проверка здоровья
-curl http://localhost:3005/health/live
+docker build -t auth:dev .
+docker run --env-file .env -p 3003:3003 auth:dev
 ```
 
-### Docker Compose (dev)
-
-Минимальный compose для сервиса:
-
-```yaml
-services:
-  rabbitmq:
-    image: rabbitmq:3.13-management
-    ports: ['5672:5672', '15672:15672']
-    environment:
-      RABBITMQ_DEFAULT_USER: dev
-      RABBITMQ_DEFAULT_PASS: dev
-
-  db_auth:
-    image: postgres:17-alpine
-    environment:
-      POSTGRES_DB: auth_db
-      POSTGRES_USER: auth
-      POSTGRES_PASSWORD: auth
-    ports: ['5433:5432']
-
-  auth:
-    image: your-registry/course_auth:dev
-    environment:
-      NODE_ENV: development
-      PORT: 3001
-      RMQ_URL: amqp://dev:dev@rabbitmq:5672
-      AUTH_QUEUE: auth
-      POSTGRES_HOST: db_auth
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: auth_db
-      POSTGRES_USER: auth
-      POSTGRES_PASSWORD: auth
-      JWT_PRIVATE_KEY: |-
-        -----BEGIN PRIVATE KEY-----
-        ...
-        -----END PRIVATE KEY-----
-      JWT_PUBLIC_KEY: |-
-        -----BEGIN PUBLIC KEY-----
-        ...
-        -----END PUBLIC KEY-----
-      JWT_REFRESH_SECRET: dev-refresh-secret
-      SALT_ROUNDS: 10
-    ports: ['3001:3001']
-    depends_on: [rabbitmq, db_auth]
-```
-
----
-
-## RPC (RabbitMQ) контракты
-
-Очередь по умолчанию: auth (AUTH_QUEUE). Сообщения в формате транспорта Nest ({ "pattern": "...", "data": {...} }).
-
-### auth.generateTokens
-
-**Request:**
-
-```
-{
-  "pattern": "auth.generateTokens",
-  "data": {
-    "user": {
-      "id": "u-1",
-      "email": "user@example.com",
-      "name": "Alice",
-      "role": "STUDENT",
-      "specializationId": null
-    }
-  }
-}
-```
-
-**Response:**
-
-```
-{ "accessToken": "...", "refreshToken": "..." }
-```
-
-### auth.validateAccess
-
-**Request:**
-
-```
-{ "pattern": "auth.validateAccess", "data": { "token": "..." } }
-```
-
-**Response:**
-
-```
-{ "valid": true, "payload": { "id":"u-1","email":"user@example.com","role":"STUDENT", ... } }
-```
-
-### auth.validateRefresh
-
-**Request:**
-
-```
-{ "pattern": "auth.validateRefresh", "data": { "token": "..." } }
-```
-
-**Response:**
-
-```
-{ "valid": true, "payload": { "id":"u-1", ... } }
-```
-
-### auth.hashPassword
-
-**Request:**
-
-```
-{ "pattern": "auth.hashPassword", "data": { "plain": "pass123" } }
-```
-
-**Response:**
-
-```
-{ "hash": "$2b$10$..." }
-```
-
-### auth.comparePassword
-
-**Request:**
-
-```
-{ "pattern": "auth.comparePassword", "data": { "plain": "pass123", "stored": "$2b$10$..." } }
-```
-
-**Response:**
-
-```
-{ "match": true }
-```
-
----
-
-## HTTP API
-
-**Только health-эндпойнты (для k8s probes):**
-
-- GET /health/live
-- GET /health/ready
-
----
-
-## Структура БД
-
-**Таблица `token`:**
-
-| колонка    | тип          | примечание                 |
-| ---------- | ------------ | -------------------------- |
-| id         | serial PK    |                            |
-| token      | varchar(100) | JWT RS256                  |
-| user_id    | varchar(64)  | идентификатор пользователя |
-| created_at | timestamptz  | по умолчанию now()         |
-
----
+Для полноценного запуска нужны RabbitMQ и Postgres (можно использовать
+docker-compose).
 
 ## Тесты и линт
 
 ```bash
-# Юнит‑тесты
 npm test
-
-# Линтер
 npm run lint
 ```
 
-В проекте есть пример юнит‑теста `auth.service.spec.ts`.
-Репозиторий и RMQ в тестах **мокируются**, БД не требуется.
+## CI/CD
 
----
-
-## CI/CD и релизы
-
-- PR в `main` → запускаются Lint/Build/Test.
-- Пуш тега `v*.*.*` или pre‑release (`v1.0.0-alpha1`, `v1.2.0-beta2`) →
-  GitHub Actions собирает multi‑arch Docker‑образ и пушит в Docker Hub:
-
-  ```
-  ${DOCKERHUB_USERNAME}/<repo>:<tag>
-  ${DOCKERHUB_USERNAME}/<repo>:latest
-  ```
-
-  Также создаётся ветка `release/<tag>` для быстрого rollback.
-
-**Как создать тег**
-
-Через GitHub Releases (UI):
-
-1. _Releases_ → _New release_
-2. _Choose a tag_: `v1.0.0` или pre‑release `v1.0.0-alpha_1`
-3. Для нестабильной версии поставь чекбокс **Set as a pre-release**
-4. _Publish release_
-
-Через `git` (CLI):
-
-```bash
-git checkout main
-git pull
-git tag v1.0.0-alpha_1   # SemVer с точкой работает через CLI
-git push origin v1.0.0-alpha_1
-```
-
----
-
-## Kubernetes (примеры)
-
-**ConfigMap (dev):**
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: auth-config
-  namespace: course
-data:
-  NODE_ENV: 'development'
-  PORT: '3001'
-  RMQ_URL: 'amqp://dev:dev@rabbitmq.course.svc:5672'
-  AUTH_QUEUE: 'auth'
-  POSTGRES_HOST: 'postgres.course.svc'
-  POSTGRES_PORT: '5432'
-  POSTGRES_DB: 'auth_db'
-  POSTGRES_USER: 'auth'
-```
-
-**Deployment (dev):**
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: auth
-  namespace: course
-  labels: { app: auth }
-spec:
-  replicas: 1
-  selector: { matchLabels: { app: auth } }
-  template:
-    metadata: { labels: { app: auth } }
-    spec:
-      containers:
-        - name: app
-          image: your-registry/course_auth:dev
-          ports: [{ name: http, containerPort: 3001 }]
-          envFrom:
-            - configMapRef: { name: auth-config }
-          env:
-            - name: POSTGRES_PASSWORD
-              value: 'auth'
-            - name: JWT_PRIVATE_KEY
-              valueFrom:
-                { secretKeyRef: { name: jwt-private, key: JWT_PRIVATE_KEY } }
-            - name: JWT_PUBLIC_KEY
-              valueFrom:
-                { secretKeyRef: { name: jwt-public, key: JWT_PUBLIC_KEY } }
-            - name: JWT_REFRESH_SECRET
-              valueFrom:
-                { secretKeyRef: { name: jwt-refresh, key: JWT_REFRESH_SECRET } }
-          readinessProbe:
-            httpGet: { path: /health/ready, port: http }
-          livenessProbe:
-            httpGet: { path: /health/live, port: http }
-          resources:
-            requests: { cpu: '100m', memory: '128Mi' }
-            limits: { cpu: '400m', memory: '384Mi' }
-```
-
----
-
-## Troubleshooting
-
-- **RabbitMQ UI:** _“Message published, but not routed”_ — публикуешь не в ту очередь/эксчендж. Для тестов заходи в **Queues → auth → Publish message** и отправляй JSON в формате `{ "pattern": "...", "data": {...} }`.
-- **ERRORS:** _Access не валидируется в другом сервисе_ - убедись, что сервисы используют один и тот же JWT_PUBLIC_KEY (публичный ключ), и что access подписывается приватным ключом JWT_PRIVATE_KEY.
-- **`npm test` падает из‑за отсутствия тестов:** в CI/локально используем jest без `--passWithNoTests`. Добавь хотя бы один простой юнит‑тест (пример в `src/modules/analytics/test`).
-
----
+- PR и пуш в `main`: Lint/Build/Test.
+- Тег `v*.*.*`: сборка и пуш Docker образа + публикация GitHub Release.
+- После пуша в `main` workflow может создавать issues из `todos.md`.
 
 ## Лицензия
 
